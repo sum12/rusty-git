@@ -1,12 +1,32 @@
+use ini::Ini;
 use std::fs;
 use std::path::PathBuf;
-struct GitRepo<'a> {
-    git_path: &'a str,
-    //workdir_path: &'a str,
+struct GitRepo {
+    git_path: String,
+    workdir_path: String,
+    conf: Ini,
+}
+
+impl GitRepo {
+    fn new(path: &str) -> Result<GitRepo, &str> {
+        let mut gitdir = PathBuf::from(path);
+        gitdir.push(".git");
+        let gitdir = gitdir.as_path().to_str();
+        let wkdir = path;
+        if let Some(gd) = gitdir {
+            let gitrepo = GitRepo {
+                git_path: gd.to_string(),
+                workdir_path: wkdir.to_string(),
+                conf: Ini::new(),
+            };
+            return Ok(gitrepo);
+        }
+        return Err("PathBuf Creation error");
+    }
 }
 
 fn repo_path(r: &GitRepo, path: &[&str]) -> PathBuf {
-    let mut ret = PathBuf::from(r.git_path);
+    let mut ret = PathBuf::from(&r.git_path);
     for p in path {
         ret.push(p);
     }
@@ -38,12 +58,10 @@ fn repo_file(r: &GitRepo, path: &[&str], mkdir: bool) -> Option<PathBuf> {
 }
 
 fn main() {
-    let r = &GitRepo {
-        git_path: ".git",
-        //workdir_path: ".",
-    };
+    let r = GitRepo::new("sumit").expect("New Repo not possible");
+
     let v = vec!["refs", "remotes", "origins", "HEAD"];
-    let s = repo_file(r, &v, true);
+    let s = repo_file(&r, &v, true);
 
     if let Some(p) = s {
         println!("this is = {:?}", p);
