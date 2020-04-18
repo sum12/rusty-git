@@ -8,20 +8,61 @@ struct GitRepo {
 }
 
 impl GitRepo {
-    fn new(path: &str) -> Result<GitRepo, &str> {
+    fn new(path: &str, force: bool) -> Result<GitRepo, &str> {
         let mut gitdir = PathBuf::from(path);
         gitdir.push(".git");
-        let gitdir = gitdir.as_path().to_str();
         let wkdir = path;
-        if let Some(gd) = gitdir {
-            let gitrepo = GitRepo {
-                git_path: gd.to_string(),
-                workdir_path: wkdir.to_string(),
-                conf: Ini::new(),
-            };
-            return Ok(gitrepo);
+
+        if !(force || (gitdir.exists() && gitdir.is_dir())) {
+            return Err(".git dir is missing");
         }
-        return Err("PathBuf Creation error");
+
+        let gitdir = gitdir.as_path().to_str();
+        if !force && gitdir.is_none() {
+            return Err("Gitdir not resolable");
+        }
+        let gitdir = gitdir.unwrap_or("");
+
+        let mut gitrepo = GitRepo {
+            git_path: gitdir.to_string(),
+            workdir_path: wkdir.to_string(),
+            conf: Ini::new(),
+        };
+
+        let cnf_pth = repo_file(&gitrepo, &["config"], false);
+        if !force && cnf_pth.is_none() {
+            return Err("Gitdir not resolable");
+        }
+
+        if let Some(cnf_pth) = cnf_pth {
+            if cnf_pth.is_file() && cnf_pth.exists() {
+                gitrepo.conf = Ini::load_from_file(cnf_pth.as_path()).unwrap();
+            } else if !force {
+                return Err("config file missing !");
+            }
+        } else if !force {
+            return Err("config file missing !");
+        }
+
+        if !force {
+            let repover = gitrepo
+                .conf
+                .get_from(Some("core"), "repositoryformatversion");
+
+            if let Some(repover) = repover {
+                let repover = repover.trim().parse();
+                if let Ok(0) = repover {
+                    return Ok(gitrepo);
+                } else {
+                    println!("repositoryformatversion {:?}", repover);
+                    return Err("repositoryformatversion not supported");
+                }
+            } else {
+                return Err("repositoryformatversion not available");
+            }
+        }
+
+        return Ok(gitrepo);
     }
 }
 
@@ -58,7 +99,7 @@ fn repo_file(r: &GitRepo, path: &[&str], mkdir: bool) -> Option<PathBuf> {
 }
 
 fn main() {
-    let r = GitRepo::new("sumit").expect("New Repo not possible");
+    let r = GitRepo::new("sumit", false).expect("New Repo not possible");
 
     let v = vec!["refs", "remotes", "origins", "HEAD"];
     let s = repo_file(&r, &v, true);
