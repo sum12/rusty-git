@@ -98,8 +98,64 @@ fn repo_file(r: &GitRepo, path: &[&str], mkdir: bool) -> Option<PathBuf> {
     return None;
 }
 
+fn create_repo(rp: &str) -> Result<GitRepo, &str> {
+    let r = GitRepo::new(rp, true).expect("Repo Creation Error");
+
+    let workdir_path = PathBuf::from(&r.workdir_path[..]);
+
+    if workdir_path.exists() {
+        if !workdir_path.is_dir() {
+            return Err("workdir is not a dir");
+        }
+        let dir = fs::read_dir(&workdir_path);
+        for _ in dir {
+            return Err("workdir is not empty");
+        }
+    } else {
+        fs::create_dir_all(&workdir_path)
+            .expect(&format!("create dir failed: {:?}", &workdir_path));
+    }
+
+    repo_dir(&r, &["branches"], true).expect("could not create branches folder");
+    repo_dir(&r, &["objects"], true).expect("could not create objects folder");
+    repo_dir(&r, &["refs", "tags"], true).expect("could not create refs/tags folder");
+    repo_dir(&r, &["refs", "heads"], true).expect("could not create refs/heads folder");
+
+    if let Some(s) = repo_file(&r, &["description"], true) {
+        fs::write(
+            s,
+            "Unnamed repository; edit this file 'description' to name the repository.\n",
+        )
+        .expect("Cannot write description file");
+    }
+
+    if let Some(f) = repo_file(&r, &["HEAD"], true) {
+        fs::write(f, "ref: refs/heads/master\n").expect("cannot write HEAD file");
+    }
+
+    if let Some(f) = repo_file(&r, &["config"], true) {
+        repo_default_config()
+            .write_to_file(f)
+            .expect("failed to write config");
+    }
+    return Ok(r);
+}
+
+fn repo_default_config() -> Ini {
+    let mut ret = Ini::new();
+    for (k, v) in &[
+        ("repositoryformatversion", "0"),
+        ("filemode", "false"),
+        ("bare", "false"),
+    ] {
+        ret.set_to(Some("core"), k.to_string(), v.to_string());
+    }
+
+    ret
+}
+
 fn main() {
-    let r = GitRepo::new("sumit", false).expect("New Repo not possible");
+    let r = create_repo("sumit").expect("New Repo not possible");
 
     let v = vec!["refs", "remotes", "origins", "HEAD"];
     let s = repo_file(&r, &v, true);
