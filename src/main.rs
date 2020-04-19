@@ -155,12 +155,30 @@ fn repo_default_config() -> Ini {
 }
 
 fn main() {
-    let r = create_repo("sumit").expect("New Repo not possible");
+    let matches = clap::App::new("Gust")
+        .version("0.1")
+        .about("Simple rust based git client")
+        .subcommand(
+            clap::SubCommand::with_name("init")
+                .about("Create a git repo")
+                .arg(
+                    clap::Arg::with_name("path")
+                        .help("Required path for repo")
+                        .required(true),
+                ),
+        )
+        .get_matches();
 
-    let v = vec!["refs", "remotes", "origins", "HEAD"];
-    let s = repo_file(&r, &v, true);
+    match matches.subcommand() {
+        ("init", Some(init)) => {
+            let r = create_repo(init.value_of("path").unwrap()).expect("could not create repo");
+            let v = vec!["refs", "remotes", "origins", "HEAD"];
+            let s = repo_file(&r, &v, true);
 
-    if let Some(p) = s {
-        println!("this is = {:?}", p);
+            if let Some(p) = s {
+                println!("this is = {:?}", p);
+            }
+        }
+        (&_, _) => {}
     }
 }
