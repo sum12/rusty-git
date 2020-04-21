@@ -154,6 +154,22 @@ fn repo_default_config() -> Ini {
     ret
 }
 
+fn repo_find(path: &str, required: bool) -> Option<GitRepo> {
+    let path = PathBuf::from(path);
+
+    if path.join(".git").exists() {
+        return Some(GitRepo::new(path.to_str().unwrap(), false).unwrap());
+    }
+
+    if let Some(parent) = path.parent() {
+        repo_find(parent.to_str().unwrap(), required)
+    } else if required {
+        panic!(".git dir not found !")
+    } else {
+        None
+    }
+}
+
 fn main() {
     let matches = clap::App::new("Gust")
         .version("0.1")
