@@ -170,6 +170,38 @@ fn repo_find(path: &str, required: bool) -> Option<GitRepo> {
     }
 }
 
+struct GitCommit(String);
+struct GitTree(String);
+struct GitTag(String);
+struct GitBlob(String);
+
+enum Object {
+    GitCommit(GitCommit),
+    GitTree(GitTree),
+    GitTag(GitTag),
+    GitBlob(GitBlob),
+}
+
+trait ReadWrite {
+    fn new(r: &GitRepo, data: &str) -> Result<Object, String>;
+    fn serialize(&self) -> Result<String, String>;
+    fn deserialize(&mut self, data: String);
+}
+
+impl ReadWrite for GitBlob {
+    fn new(_: &GitRepo, data: &str) -> Result<Object, String> {
+        let s = data.to_string();
+        return Ok(Object::GitBlob(GitBlob(s)));
+    }
+
+    fn serialize(&self) -> Result<String, String> {
+        Ok((&self.0[..]).to_string())
+    }
+    fn deserialize(&mut self, data: String) {
+        self.0 = data
+    }
+}
+
 fn main() {
     let matches = clap::App::new("Gust")
         .version("0.1")
