@@ -1,5 +1,8 @@
+use flate2::bufread::ZlibDecoder;
 use ini::Ini;
 use std::fs;
+use std::io;
+use std::io::Read;
 use std::path::PathBuf;
 struct GitRepo {
     git_path: String,
@@ -175,30 +178,55 @@ struct GitTree(String);
 struct GitTag(String);
 struct GitBlob(String);
 
-enum Object {
-    GitCommit(GitCommit),
-    GitTree(GitTree),
-    GitTag(GitTag),
-    GitBlob(GitBlob),
+impl GitBlob {
+    fn new(_: &GitRepo, data: &str) -> Result<GitBlob, String> {
+        let s = data.to_string();
+        return Ok(GitBlob(s));
+    }
 }
 
 trait ReadWrite {
-    fn new(r: &GitRepo, data: &str) -> Result<Object, String>;
     fn serialize(&self) -> Result<String, String>;
     fn deserialize(&mut self, data: String);
 }
 
 impl ReadWrite for GitBlob {
-    fn new(_: &GitRepo, data: &str) -> Result<Object, String> {
-        let s = data.to_string();
-        return Ok(Object::GitBlob(GitBlob(s)));
-    }
-
     fn serialize(&self) -> Result<String, String> {
         Ok((&self.0[..]).to_string())
     }
     fn deserialize(&mut self, data: String) {
         self.0 = data
+    }
+}
+
+fn decode_bufreader(bytes: Vec<u8>) -> io::Result<String> {
+    let mut z = ZlibDecoder::new(&bytes[..]);
+    let mut s = String::new();
+    z.read_to_string(&mut s)?;
+    Ok(s)
+}
+
+fn object_read(r: &GitRepo, sha: &str) -> impl ReadWrite {
+    let path = repo_file(r, &["objects", &sha[0..2], &sha[2..]], false)
+        .expect("object path doesnt Exists");
+
+    let raw: String = decode_bufreader(fs::read(path).unwrap()).unwrap();
+
+    let x = raw.find(" ").unwrap();
+    let fmt = &raw[0..x];
+
+    let y = raw.find("\x00").unwrap();
+    let size = &raw[x..y];
+
+    if let Ok(size) = size.parse::<usize>() {
+        if size != (raw.len() - y - 1) {
+            panic!("Malformed Object");
+        }
+    }
+
+    match fmt {
+        "blob" => GitBlob::new(r, &raw[y + 1..]).unwrap(),
+        &_ => panic!("cannot parse object"),
     }
 }
 
