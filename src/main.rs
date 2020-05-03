@@ -1,8 +1,9 @@
 use flate2::bufread::ZlibDecoder;
 use ini::Ini;
+use std::collections::HashMap;
 use std::fs;
 use std::io;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::PathBuf;
 struct GitRepo {
     git_path: String,
@@ -157,15 +158,16 @@ fn repo_default_config() -> Ini {
     ret
 }
 
-fn repo_find(path: &str, required: bool) -> Option<GitRepo> {
-    let path = PathBuf::from(path);
+fn repo_find(path: Option<&str>, required: Option<bool>) -> Option<GitRepo> {
+    let required = required.unwrap_or(false);
+    let path = PathBuf::from(path.unwrap_or("."));
 
     if path.join(".git").exists() {
         return Some(GitRepo::new(path.to_str().unwrap(), false).unwrap());
     }
 
     if let Some(parent) = path.parent() {
-        repo_find(parent.to_str().unwrap(), required)
+        repo_find(parent.to_str(), Some(required))
     } else if required {
         panic!(".git dir not found !")
     } else {
@@ -222,12 +224,89 @@ fn object_read(r: &GitRepo, sha: &str) -> impl ReadWrite {
         if size != (raw.len() - y - 1) {
             panic!("Malformed Object");
         }
+    } else {
+        panic!("invalid object file: size")
     }
 
     match fmt {
         "blob" => GitBlob::new(r, &raw[y + 1..]).unwrap(),
         &_ => panic!("cannot parse object"),
     }
+}
+
+fn object_find<'a>(
+    r: &GitRepo,
+    name: &'a str,
+    objtype: Option<&str>,
+    follow: Option<bool>,
+) -> &'a str {
+    name
+}
+
+struct OrderedHM {
+    order: Vec<String>,
+    kv: HashMap,
+}
+
+impl OrderedHM {
+    fn new() -> OrderedHM {
+        OrderedHM {
+            order: Vec::new(),
+            kv: HashMap::new(),
+        }
+    }
+}
+
+fn kvlm_parse(raw: &str, start: Option<u32>, okv: Option<OrderedHM>) -> OrderedHM {
+    let okv = okv.unwrap_or(OrderedHM::new());
+    let start = start.unwrap_or(0);
+
+    let spc = raw[start..].find(' ').unwrap_or(-1);
+    let nl = raw[start..].find('\n').unwrap_or(-1);
+
+    if (spc < 0) || (nl < spc) {
+        assert!(nl == start);
+        let key = "";
+        okv.kv.insert(key, raw[start + 1..]);
+        okv.order.append(&key);
+        return okv;
+    }
+
+    let key = raw[start..spc];
+    let end = start;
+
+    loop {
+        end = raw[end + 1..].find('\n').unwrap_or(-1);
+        if raw[end + 1] != ' ' {
+            break;
+        }
+    }
+
+    let value = raw[spc + 1..end].replace("\n", "\n ");
+
+    if okv.kv.contains_key(key) {
+        if let Some(val) = okv.kv.get_mut(key) {
+            if let Some(Vec) = val {
+                val.append(value);
+            }
+        } else {
+            okv.kv.insert(key, vec![okv.kv.get(key).unwrap(), value])
+        }
+    } else {
+        okv.kv.insert(key, value);
+        okv.order.insert(&key)
+    }
+    okv
+}
+
+fn cat_file(r: &GitRepo, objname: &str, objtype: Option<&str>) {
+    let obj = object_read(r, object_find(r, objname, objtype, None));
+    io::stdout().write(obj.serialize().expect("Could not serialize").as_bytes());
+}
+
+fn cat_file_cmd(objname: &str, objtype: Option<&str>) {
+    let r = repo_find(None, None).expect("Repo not found");
+    cat_file(&r, objname, objtype);
 }
 
 fn main() {
@@ -243,6 +322,21 @@ fn main() {
                         .required(true),
                 ),
         )
+        .subcommand(
+            clap::SubCommand::with_name("cat-file")
+                .about("Provide the content of a repo object")
+                .arg(
+                    clap::Arg::with_name("type")
+                        .help("Specify type of object")
+                        .possible_values(&["blob"])
+                        .required(true),
+                )
+                .arg(
+                    clap::Arg::with_name("name")
+                        .help("The object to display")
+                        .required(true),
+                ),
+        )
         .get_matches();
 
     match matches.subcommand() {
@@ -255,6 +349,10 @@ fn main() {
                 println!("this is = {:?}", p);
             }
         }
+        ("cat-file", Some(catfile)) => cat_file_cmd(
+            catfile.value_of("name").unwrap(),
+            Some(catfile.value_of("type").unwrap()),
+        ),
         (&_, _) => {}
     }
 }
