@@ -175,7 +175,7 @@ fn repo_find(path: Option<&str>, required: Option<bool>) -> Option<GitRepo> {
     }
 }
 
-struct GitCommit(String);
+struct GitCommit(OrderedHM);
 struct GitTree(String);
 struct GitTag(String);
 struct GitBlob(String);
@@ -208,28 +208,41 @@ fn decode_bufreader(bytes: Vec<u8>) -> io::Result<String> {
     Ok(s)
 }
 
-fn object_read(r: &GitRepo, sha: &str) -> impl ReadWrite {
+fn object_read<'a>(r: &GitRepo, sha: &str) -> (String, String) {
     let path = repo_file(r, &["objects", &sha[0..2], &sha[2..]], false)
         .expect("object path doesnt Exists");
 
     let raw: String = decode_bufreader(fs::read(path).unwrap()).unwrap();
 
-    let x = raw.find(" ").unwrap();
-    let fmt = &raw[0..x];
+    let x = raw
+        .find(" ")
+        .expect("Cannot read format from object header");
+    let (fmt, raw) = raw.split_at(x);
 
-    let y = raw.find("\x00").unwrap();
-    let size = &raw[x..y];
+    let y = raw
+        .find("\x00")
+        .expect("Cannot read size from object header");
+
+    let (size, raw) = raw.split_at(y);
+
+    let size = &size[1..]; //drop the space
+    let raw = &raw[1..]; //drop the null
 
     if let Ok(size) = size.parse::<usize>() {
-        if size != (raw.len() - y - 1) {
-            panic!("Malformed Object");
+        if size != (raw.len()) {
+            panic!(
+                "Malformed Object, \nstored size:{}\nactual size:{}",
+                size,
+                raw.len()
+            );
         }
     } else {
         panic!("invalid object file: size")
     }
 
     match fmt {
-        "blob" => GitBlob::new(r, &raw[y + 1..]).unwrap(),
+        "blob" => (fmt.to_string(), raw.to_string()),
+        "commit" => (fmt.to_string(), raw.to_string()),
         &_ => panic!("cannot parse object"),
     }
 }
@@ -243,9 +256,18 @@ fn object_find<'a>(
     name
 }
 
+impl GitCommit {
+    fn new(_: &GitRepo, data: &str) -> Result<GitCommit, String> {
+        let s = data.to_string();
+        let mut gc = GitCommit(OrderedHM::new());
+        gc.deserialize(s);
+        Ok(gc)
+    }
+}
+
 struct OrderedHM {
     order: Vec<String>,
-    kv: HashMap,
+    kv: HashMap<String, Vec<String>>,
 }
 
 impl OrderedHM {
@@ -257,51 +279,125 @@ impl OrderedHM {
     }
 }
 
-fn kvlm_parse(raw: &str, start: Option<u32>, okv: Option<OrderedHM>) -> OrderedHM {
-    let okv = okv.unwrap_or(OrderedHM::new());
-    let start = start.unwrap_or(0);
+fn kvlm_parse(raw: String, start: Option<usize>, okv: Option<OrderedHM>) -> OrderedHM {
+    let mut okv = okv.unwrap_or(OrderedHM::new());
+    let start = start.unwrap_or(0 as usize);
+    let raw = String::from_utf8(raw.as_bytes()[start..].to_vec()).unwrap();
 
-    let spc = raw[start..].find(' ').unwrap_or(-1);
-    let nl = raw[start..].find('\n').unwrap_or(-1);
+    let spc = raw.find(' ');
+    let nl = raw.find('\n');
 
-    if (spc < 0) || (nl < spc) {
-        assert!(nl == start);
-        let key = "";
-        okv.kv.insert(key, raw[start + 1..]);
-        okv.order.append(&key);
+    //println!("raw ===> \n{}", raw);
+    //if (spc < 0) || (nl < spc) {
+    if spc.is_none() || (nl < spc) {
+        //println!("{:?}", nl);
+        //println!("{:?}", spc);
+        //println!("{:?}", start);
+        assert!(nl.expect("Malformed Object: no new line at end") == start);
+        okv.order.push("".to_string());
+        okv.kv
+            .insert("".to_string(), vec![raw[start + 1..].to_string()]);
         return okv;
     }
 
-    let key = raw[start..spc];
-    let end = start;
+    //println!("{}", start);
+    //println!("{}", spc);
+    //println!("{}", raw);
+    let spc = spc.unwrap();
 
-    loop {
-        end = raw[end + 1..].find('\n').unwrap_or(-1);
-        if raw[end + 1] != ' ' {
+    //let key = &raw[start..spc];
+    let (key, raw) = raw.split_at(spc);
+    let raw = raw[1..].to_string();
+    let mut end = 0 as usize;
+
+    //println!("{}", key);
+    for (count, b) in raw.chars().enumerate() {
+        if end != 0 && end == count - 1 && b != ' ' {
             break;
         }
+        if b == '\n' {
+            end = count
+        }
     }
+    //loop {
+    //
+    //    //end = raw[end + 1..].find('\n').unwrap_or(0 as usize);
+    //    end = raw[end + 1..].find('\n').unwrap_or(0 as usize);
+    //    println!("{}", end);
+    //    println!("---------{}", raw.as_bytes()[end] == '9' as u8);
+    //    println!("---------{}", &raw[start + 1..end]);
 
-    let value = raw[spc + 1..end].replace("\n", "\n ");
+    //    if raw.as_bytes()[end + 1] != ' ' as u8 {
+    //        break;
+    //    }
+    //    end+=1:
+    //}
+
+    //println!("{}", end);
+    //println!("---------{}", raw.as_bytes()[end - 1] == ' ' as u8);
+    //println!("---------{}", &raw[..end]);
+
+    let (value, raw) = raw.split_at(end);
+    let value = value.replace("\n ", "\n");
+    let raw = raw[1..].to_string();
+    //println!("---------{}..", value);
 
     if okv.kv.contains_key(key) {
         if let Some(val) = okv.kv.get_mut(key) {
-            if let Some(Vec) = val {
-                val.append(value);
-            }
-        } else {
-            okv.kv.insert(key, vec![okv.kv.get(key).unwrap(), value])
+            val.push(value);
         }
     } else {
-        okv.kv.insert(key, value);
-        okv.order.insert(&key)
+        //println!("..{}..", key);
+        //println!("..{}..", value);
+        okv.kv.insert(key.to_string(), vec![value]);
+        okv.order.push(key.to_string());
     }
-    okv
+    //println!("---------{}", raw.as_bytes()[end] == '9' as u8);
+
+    kvlm_parse(raw, None, Some(okv))
+}
+
+fn kvlm_serialize(okv: &OrderedHM) -> String {
+    let mut ret = String::new();
+    //println!("{:?}", okv.order);
+    for key in okv.order.iter() {
+        //println!("{}", key);
+        if key == "" {
+            continue;
+        };
+        let val = okv.kv.get(key).expect("key not found !");
+        for v in val.iter() {
+            //println!("{}", v);
+            ret += format!("{} {}\n", key, v.replace("\n", "\n ")).as_str();
+        }
+    }
+    ret.push_str("\n");
+    ret += &okv.kv.get("").unwrap_or(&vec!["".to_string()])[0];
+    ret
+}
+
+impl ReadWrite for GitCommit {
+    fn serialize(&self) -> Result<String, String> {
+        Ok(kvlm_serialize(&self.0))
+    }
+    fn deserialize(&mut self, data: String) {
+        self.0 = kvlm_parse(data, None, None);
+    }
 }
 
 fn cat_file(r: &GitRepo, objname: &str, objtype: Option<&str>) {
-    let obj = object_read(r, object_find(r, objname, objtype, None));
-    io::stdout().write(obj.serialize().expect("Could not serialize").as_bytes());
+    let (fmt, contents) = object_read(r, object_find(r, objname, objtype, None));
+    match fmt.as_str() {
+        "blob" => {
+            let obj = GitBlob::new(r, contents.as_str()).unwrap().serialize();
+            io::stdout().write(obj.expect("Could not serialize").as_bytes());
+        }
+        "commit" => {
+            let obj = GitCommit::new(r, contents.as_str()).unwrap().serialize();
+            io::stdout().write(obj.expect("Could not serialize").as_bytes());
+        }
+        _ => panic!("unknown format"),
+    }
 }
 
 fn cat_file_cmd(objname: &str, objtype: Option<&str>) {
