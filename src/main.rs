@@ -279,10 +279,8 @@ impl OrderedHM {
     }
 }
 
-fn kvlm_parse(raw: String, start: Option<usize>, okv: Option<OrderedHM>) -> OrderedHM {
+fn kvlm_parse(raw: String, okv: Option<OrderedHM>) -> OrderedHM {
     let mut okv = okv.unwrap_or(OrderedHM::new());
-    let start = start.unwrap_or(0 as usize);
-    let raw = String::from_utf8(raw.as_bytes()[start..].to_vec()).unwrap();
 
     let spc = raw.find(' ');
     let nl = raw.find('\n');
@@ -292,20 +290,16 @@ fn kvlm_parse(raw: String, start: Option<usize>, okv: Option<OrderedHM>) -> Orde
     if spc.is_none() || (nl < spc) {
         //println!("{:?}", nl);
         //println!("{:?}", spc);
-        //println!("{:?}", start);
-        assert!(nl.expect("Malformed Object: no new line at end") == start);
+        assert!(nl.expect("Malformed Object: no new line at end") == 0);
         okv.order.push("".to_string());
-        okv.kv
-            .insert("".to_string(), vec![raw[start + 1..].to_string()]);
+        okv.kv.insert("".to_string(), vec![raw]);
         return okv;
     }
 
-    //println!("{}", start);
     //println!("{}", spc);
     //println!("{}", raw);
     let spc = spc.unwrap();
 
-    //let key = &raw[start..spc];
     let (key, raw) = raw.split_at(spc);
     let raw = raw[1..].to_string();
     let mut end = 0 as usize;
@@ -319,19 +313,6 @@ fn kvlm_parse(raw: String, start: Option<usize>, okv: Option<OrderedHM>) -> Orde
             end = count
         }
     }
-    //loop {
-    //
-    //    //end = raw[end + 1..].find('\n').unwrap_or(0 as usize);
-    //    end = raw[end + 1..].find('\n').unwrap_or(0 as usize);
-    //    println!("{}", end);
-    //    println!("---------{}", raw.as_bytes()[end] == '9' as u8);
-    //    println!("---------{}", &raw[start + 1..end]);
-
-    //    if raw.as_bytes()[end + 1] != ' ' as u8 {
-    //        break;
-    //    }
-    //    end+=1:
-    //}
 
     //println!("{}", end);
     //println!("---------{}", raw.as_bytes()[end - 1] == ' ' as u8);
@@ -354,7 +335,7 @@ fn kvlm_parse(raw: String, start: Option<usize>, okv: Option<OrderedHM>) -> Orde
     }
     //println!("---------{}", raw.as_bytes()[end] == '9' as u8);
 
-    kvlm_parse(raw, None, Some(okv))
+    kvlm_parse(raw, Some(okv))
 }
 
 fn kvlm_serialize(okv: &OrderedHM) -> String {
@@ -381,7 +362,7 @@ impl ReadWrite for GitCommit {
         Ok(kvlm_serialize(&self.0))
     }
     fn deserialize(&mut self, data: String) {
-        self.0 = kvlm_parse(data, None, None);
+        self.0 = kvlm_parse(data, None);
     }
 }
 
