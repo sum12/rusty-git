@@ -1,5 +1,7 @@
-use flate2::bufread::ZlibDecoder;
+use flate2::bufread::{ZlibDecoder, ZlibEncoder};
 use ini::Ini;
+use sha1;
+use sha1::Digest;
 use std::collections::HashMap;
 use std::fs;
 use std::io;
@@ -175,24 +177,35 @@ fn repo_find(path: Option<&str>, required: Option<bool>) -> Option<GitRepo> {
     }
 }
 
-struct GitCommit(OrderedHM);
+struct GitCommit<'a> {
+    repo: &'a GitRepo,
+    okv: OrderedHM,
+}
 struct GitTree(String);
 struct GitTag(String);
-struct GitBlob(String);
+struct GitBlob<'a>(String, &'a GitRepo);
 
-impl GitBlob {
-    fn new(_: &GitRepo, data: &str) -> Result<GitBlob, String> {
+impl<'a> GitBlob<'a> {
+    fn new(r: &'a GitRepo, data: &str) -> Result<GitBlob<'a>, String> {
         let s = data.to_string();
-        return Ok(GitBlob(s));
+        return Ok(GitBlob(s, r));
     }
 }
 
 trait ReadWrite {
     fn serialize(&self) -> Result<String, String>;
     fn deserialize(&mut self, data: String);
+    fn fmt(&self) -> &str;
+    fn repo(&self) -> &GitRepo;
 }
 
-impl ReadWrite for GitBlob {
+impl<'a> ReadWrite for GitBlob<'a> {
+    fn repo(&self) -> &GitRepo {
+        self.1
+    }
+    fn fmt(&self) -> &str {
+        "blob"
+    }
     fn serialize(&self) -> Result<String, String> {
         Ok((&self.0[..]).to_string())
     }
@@ -235,6 +248,8 @@ fn object_read<'a>(r: &GitRepo, sha: &str) -> (String, String) {
                 size,
                 raw.len()
             );
+        } else {
+            //println!("size is {} bytes", size);
         }
     } else {
         panic!("invalid object file: size")
@@ -256,10 +271,13 @@ fn object_find<'a>(
     name
 }
 
-impl GitCommit {
-    fn new(_: &GitRepo, data: &str) -> Result<GitCommit, String> {
+impl<'a> GitCommit<'a> {
+    fn new(r: &'a GitRepo, data: &str) -> Result<GitCommit<'a>, String> {
         let s = data.to_string();
-        let mut gc = GitCommit(OrderedHM::new());
+        let mut gc = GitCommit {
+            repo: r,
+            okv: OrderedHM::new(),
+        };
         gc.deserialize(s);
         Ok(gc)
     }
@@ -352,17 +370,26 @@ fn kvlm_serialize(okv: &OrderedHM) -> String {
             ret += format!("{} {}\n", key, v.replace("\n", "\n ")).as_str();
         }
     }
-    ret.push_str("\n");
+    //ret.push('\n');
+    //println!("{}", &okv.kv.get("").unwrap()[0]);
     ret += &okv.kv.get("").unwrap_or(&vec!["".to_string()])[0];
+    //.replace("\n", "\n ")
+    //.as_str();
     ret
 }
 
-impl ReadWrite for GitCommit {
+impl<'a> ReadWrite for GitCommit<'a> {
+    fn repo(&self) -> &GitRepo {
+        self.repo
+    }
+    fn fmt(&self) -> &str {
+        "commit"
+    }
     fn serialize(&self) -> Result<String, String> {
-        Ok(kvlm_serialize(&self.0))
+        Ok(kvlm_serialize(&self.okv))
     }
     fn deserialize(&mut self, data: String) {
-        self.0 = kvlm_parse(data, None);
+        self.okv = kvlm_parse(data, None);
     }
 }
 
@@ -386,6 +413,62 @@ fn cat_file_cmd(objname: &str, objtype: Option<&str>) {
     cat_file(&r, objname, objtype);
 }
 
+fn object_write(obj: impl ReadWrite, actually_write: bool) -> Result<String, String> {
+    let data = obj.serialize()?;
+    //println!("{}", data.len());
+    //println!("{}", data);
+    let data = format!("{} {}\x00{}", obj.fmt(), data.len(), data);
+
+    //println!("{:?}\n\n", data.as_bytes());
+
+    let mut hasher = sha1::Sha1::new();
+    hasher.input(data.as_bytes());
+
+    let mut sha = String::new();
+    for code in hasher.result() {
+        {
+            use std::fmt::Write;
+            let _ = write!(&mut sha, "{:x}", code);
+        }
+    }
+
+    if actually_write {
+        let r = obj.repo();
+        if let Some(path) = repo_file(&r, &["object", &sha[0..2], &sha[2..]], true) {
+            let result = io::BufReader::new(data.as_bytes());
+            let mut encoder = ZlibEncoder::new(result, flate2::Compression::fast());
+            let mut sha = String::new();
+            let _ = encoder.read_to_string(&mut sha);
+            fs::write(path, sha).expect("write failed !");
+        }
+    }
+    Ok(sha.to_string())
+}
+fn object_hash(data: String, fmt: &str, write: bool) -> String {
+    let r = repo_find(None, None).expect("Repo not found");
+    match fmt {
+        "blob" => {
+            let obj = GitBlob::new(&r, data.as_str()).expect("invalid blob");
+            object_write(obj, write).expect("blob hash failed !!")
+        }
+        "commit" => {
+            let obj = GitCommit::new(&r, data.as_str()).expect("invalid commit !!");
+            object_write(obj, write).expect("commit hash failed !!")
+        }
+        &_ => panic!("cannot parse object"),
+    }
+}
+
+fn hash_object_cmd(hashobject: &clap::ArgMatches) {
+    let write = hashobject.is_present("write");
+
+    let fmt = hashobject.value_of("type").unwrap();
+    let path = hashobject.value_of("path").unwrap();
+    let data = String::from_utf8(fs::read(path).unwrap()).unwrap();
+    let sha = object_hash(data, fmt, write);
+    let _ = io::stdout().write(sha.as_bytes());
+}
+
 fn main() {
     let matches = clap::App::new("Gust")
         .version("0.1")
@@ -405,12 +488,36 @@ fn main() {
                 .arg(
                     clap::Arg::with_name("type")
                         .help("Specify type of object")
-                        .possible_values(&["blob"])
+                        .possible_values(&["blob", "commit"])
                         .required(true),
                 )
                 .arg(
                     clap::Arg::with_name("name")
                         .help("The object to display")
+                        .required(true),
+                ),
+        )
+        .subcommand(
+            clap::SubCommand::with_name("hash-object")
+                .about("Compute object ID and optionally create a blob from a file")
+                .arg(
+                    clap::Arg::with_name("type")
+                        .help("Specify type of object")
+                        .short("t")
+                        .possible_values(&["blob", "commit"])
+                        .default_value("blob"),
+                )
+                .arg(
+                    clap::Arg::with_name("write")
+                        .help("Actually write the object into the database")
+                        .short("w")
+                        .long("write")
+                        .takes_value(false),
+                )
+                .arg(
+                    clap::Arg::with_name("path")
+                        .help("Read object from file")
+                        .takes_value(true)
                         .required(true),
                 ),
         )
@@ -430,6 +537,7 @@ fn main() {
             catfile.value_of("name").unwrap(),
             Some(catfile.value_of("type").unwrap()),
         ),
+        ("hash-object", Some(hashobject)) => hash_object_cmd(hashobject),
         (&_, _) => {}
     }
 }
